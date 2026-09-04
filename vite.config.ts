@@ -5,7 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/%REPLACE_ME%/', // Set base for GitHub Pages deployment
+  base: '/cingerr/', // Set base for GitHub Pages deployment
   plugins: [
     react(),
     tailwindcss(),
