@@ -1,40 +1,67 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
+import { availableSeconds, currentActivityIndex, defaultActivities, defaultRoutine, formatDuration, getEnabledActivities, loadState, newSession, saveState, scheduleSeconds, sessionElapsedSeconds, todayKey, type Activity, type MorningResult, type MorningSession, type Routine } from './domain'
+
+type View = 'morning' | 'parent' | 'history' | 'settings'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [state, setState] = useState(loadState)
+  const [view, setView] = useState<View>('morning')
+  const [now, setNow] = useState(Date.now())
+  const [notice, setNotice] = useState('')
+  const activities = useMemo(() => getEnabledActivities(state.routine), [state.routine])
+  const elapsed = sessionElapsedSeconds(state.session, now)
+  const currentIndex = currentActivityIndex(state.routine, state.session, now)
+  const currentActivity = activities[currentIndex] ?? activities[0]
+  const activityStart = activities.slice(0, currentIndex).reduce((total, activity) => total + activity.durationSeconds, 0)
+  const activityElapsed = Math.max(0, elapsed - activityStart)
+  const remaining = Math.max(0, (currentActivity?.durationSeconds ?? 0) + state.session.extraTimeSeconds - activityElapsed)
+  const routineTotal = scheduleSeconds(state.routine)
+  const timeAvailable = availableSeconds(state.routine)
+  const scheduleDifference = routineTotal - timeAvailable
+  const overallProgress = routineTotal ? Math.min(100, (elapsed / routineTotal) * 100) : 0
+  const isLastActivity = currentIndex === activities.length - 1
 
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center p-8">
-      <div className="flex gap-8 mb-8">
-        <a href="https://vite.dev" target="_blank" className="hover:scale-110 transition-transform">
-          <img src={viteLogo} className="h-24 w-24" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank" className="hover:scale-110 transition-transform">
-          <img src={reactLogo} className="h-24 w-24 animate-spin-slow" alt="React logo" />
-        </a>
-      </div>
-      <h1 className="text-4xl font-bold text-blue-600 underline mb-6">
-        Vite + React + Tailwind CSS v4
-      </h1>
-      <div className="bg-gray-800 rounded-lg p-6 shadow-lg w-full max-w-md">
-        <button
-          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded mb-4 w-full"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-        <p className="text-gray-300">
-          Edit <code className="bg-gray-700 px-1 rounded">src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="mt-6 text-gray-500">
-        Click on the Vite and React logos to learn more
-      </p>
-    </div>
-  )
+  useEffect(() => { if (state.session.status !== 'running') return undefined; const interval = window.setInterval(() => setNow(Date.now()), 250); return () => window.clearInterval(interval) }, [state.session.status])
+  useEffect(() => { saveState(state) }, [state])
+  useEffect(() => {
+    if (state.session.status !== 'running' || !currentActivity || remaining > 0) return undefined
+    const nextIndex = currentIndex + 1
+    if (nextIndex >= activities.length) { completeMorning(); return undefined }
+    setNotice(`${currentActivity.icon} Great job! Next mission: ${activities[nextIndex].name}`)
+    const timeout = window.setTimeout(() => setNotice(''), 2800)
+    return () => window.clearTimeout(timeout)
+  }, [activities, currentActivity, currentIndex, remaining, state.session.status])
+
+  function updateSession(update: Partial<MorningSession>) { setState((current) => ({ ...current, session: { ...current.session, ...update } })) }
+  function startMorning() { const start = Date.now(); updateSession({ startedAt: start, pausedAt: null, pausedDurationSeconds: 0, extraTimeSeconds: 0, status: 'running' }); setNow(start) }
+  function pauseMorning() { if (state.session.status === 'paused' && state.session.pausedAt) { updateSession({ pausedAt: null, pausedDurationSeconds: state.session.pausedDurationSeconds + (Date.now() - state.session.pausedAt) / 1000, status: 'running' }); return }; updateSession({ pausedAt: Date.now(), status: 'paused' }) }
+  function restartMorning() { updateSession(newSession()); setNow(Date.now()); setNotice('Fresh start! Ready when you are.'); window.setTimeout(() => setNotice(''), 2400) }
+  function skipActivity() { if (!currentActivity || state.session.status === 'idle') return; const targetElapsed = activities.slice(0, currentIndex + 1).reduce((total, activity) => total + activity.durationSeconds, 0); updateSession({ startedAt: (state.session.startedAt ?? Date.now()) - targetElapsed * 1000, completedIds: [...state.session.completedIds, currentActivity.id] }); setNow(Date.now()) }
+  function completeMorning() { if (state.session.status === 'complete') return; const finishedEarly = Math.round((routineTotal - elapsed) / 60); const result: MorningResult = { date: todayKey(), completed: true, minutesEarlyOrLate: finishedEarly, stars: finishedEarly >= 2 ? 5 : 4, completedCount: activities.length }; updateSession({ status: 'complete', completedIds: activities.map((activity) => activity.id) }); setState((current) => ({ ...current, history: [result, ...current.history.filter((item) => item.date !== result.date)] })); setNotice('🎉 Morning mission complete! You are ready for school!') }
+  function updateRoutine(update: Partial<Routine>) { setState((current) => ({ ...current, routine: { ...current.routine, ...update } })) }
+  function updateActivity(id: string, update: Partial<Activity>) { updateRoutine({ activities: state.routine.activities.map((activity) => activity.id === id ? { ...activity, ...update } : activity) }) }
+  function moveActivity(index: number, direction: -1 | 1) { const nextIndex = index + direction; if (nextIndex < 0 || nextIndex >= state.routine.activities.length) return; const next = [...state.routine.activities]; [next[index], next[nextIndex]] = [next[nextIndex], next[index]]; updateRoutine({ activities: next }) }
+  function addActivity() { updateRoutine({ activities: [...state.routine.activities, { id: `custom-${Date.now()}`, name: 'New mission', icon: '✨', durationSeconds: 5 * 60, enabled: true, flexible: true }] }) }
+  function resetRoutine() { updateRoutine({ ...defaultRoutine, activities: defaultActivities.map((activity) => ({ ...activity })) }); setNotice('Your school-day adventure is ready again.'); window.setTimeout(() => setNotice(''), 2200) }
+
+  return <div className="app-shell">
+    <header className="topbar"><button className="brand" onClick={() => setView('morning')} aria-label="Go to morning adventure"><span className="brand-mark">✦</span><span><strong>Morning</strong><small>adventure</small></span></button><div className="day-chip"><span className="status-dot" /> {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</div><button className="parent-toggle" onClick={() => setView(view === 'parent' ? 'morning' : 'parent')}>{view === 'parent' ? '← Morning' : 'Parent mode'}</button></header>
+    {notice && <div className="toast" role="status">{notice}</div>}
+    {view === 'morning' && <MorningView state={state} activities={activities} currentIndex={currentIndex} currentActivity={currentActivity} remaining={remaining} activityElapsed={activityElapsed} overallProgress={overallProgress} isLastActivity={isLastActivity} onStart={startMorning} onPause={pauseMorning} onRestart={restartMorning} onSkip={skipActivity} onParent={() => setView('parent')} />}
+    {view === 'parent' && <ParentView routine={state.routine} scheduleDifference={scheduleDifference} timeAvailable={timeAvailable} onUpdateRoutine={updateRoutine} onUpdateActivity={updateActivity} onMove={moveActivity} onAdd={addActivity} onReset={resetRoutine} onBack={() => setView('morning')} onHistory={() => setView('history')} onSettings={() => setView('settings')} />}
+    {view === 'history' && <HistoryView history={state.history} onBack={() => setView('parent')} />}
+    {view === 'settings' && <SettingsView routine={state.routine} onUpdate={updateRoutine} onBack={() => setView('parent')} />}
+  </div>
 }
+
+type MorningProps = { state: ReturnType<typeof loadState>; activities: Activity[]; currentIndex: number; currentActivity?: Activity; remaining: number; activityElapsed: number; overallProgress: number; isLastActivity: boolean; onStart: () => void; onPause: () => void; onRestart: () => void; onSkip: () => void; onParent: () => void }
+function MorningView({ state, activities, currentIndex, currentActivity, remaining, activityElapsed, overallProgress, isLastActivity, onStart, onPause, onRestart, onSkip, onParent }: MorningProps) { return <main className="morning-layout"><section className="welcome-strip"><div><p className="eyebrow">Your school-day quest</p><h1>{state.session.status === 'complete' ? 'You did it!' : 'Good morning, explorer'}</h1><p>{state.session.status === 'complete' ? 'Ready, steady, go!' : 'One little mission at a time.'}</p></div><div className="sun-orbit" aria-hidden="true"><span>☀</span></div></section><section className="adventure-grid"><div className="current-card"><div className="card-heading"><span className="eyebrow">Right now</span><span className="mission-count">{Math.min(currentIndex + 1, activities.length)} / {activities.length}</span></div><div className="mission-art" aria-hidden="true"><span>{state.session.status === 'complete' ? '🏆' : currentActivity?.icon ?? '🌞'}</span><i /><i /><i /></div><p className="eyebrow">{state.session.status === 'complete' ? 'Morning mission complete' : isLastActivity ? 'Final mission' : 'Current mission'}</p><h2>{state.session.status === 'complete' ? 'Ready for school!' : currentActivity?.name}</h2><div className="countdown" aria-label={`${formatDuration(remaining)} remaining`}>{state.session.status === 'complete' ? '★ ★ ★ ★ ★' : formatDuration(remaining)}</div><div className="progress-track"><span style={{ width: `${Math.min(100, (activityElapsed / (currentActivity?.durationSeconds ?? 1)) * 100)}%` }} /></div><p className="encouragement">{state.session.status === 'idle' ? 'Tap start when you are ready!' : state.session.status === 'paused' ? 'Paused for a grown-up.' : remaining < 60 ? 'Quick feet! Almost there!' : isLastActivity ? 'Let’s get out the door!' : 'You are doing brilliantly.'}</p><div className="main-actions">{state.session.status === 'idle' && <button className="primary-button" onClick={onStart}>Start adventure <span>→</span></button>}{state.session.status === 'running' && <button className="primary-button" onClick={onPause}>Pause for grown-up <span>Ⅱ</span></button>}{state.session.status === 'paused' && <button className="primary-button" onClick={onPause}>Continue adventure <span>→</span></button>}{state.session.status === 'complete' && <button className="primary-button" onClick={onRestart}>Play again <span>↻</span></button>}{(state.session.status === 'running' || state.session.status === 'paused') && <button className="text-button" onClick={onSkip}>Skip mission</button>}</div></div><aside className="timeline-card"><div className="card-heading"><div><span className="eyebrow">The adventure map</span><h3>On our way to {state.routine.leaveTime}</h3></div><span className="progress-percent">{Math.round(overallProgress)}%</span></div><div className="overall-track"><span style={{ width: `${overallProgress}%` }} /></div><ol className="timeline-list">{activities.map((activity, index) => { const complete = index < currentIndex || state.session.completedIds.includes(activity.id) || state.session.status === 'complete'; const active = index === currentIndex && state.session.status !== 'complete'; return <li className={`${complete ? 'is-complete' : ''} ${active ? 'is-active' : ''}`} key={activity.id}><span className="timeline-icon">{complete ? '✓' : activity.icon}</span><div><strong>{activity.name}</strong><small>{complete ? 'Complete!' : active ? 'Doing this now' : `${Math.round(activity.durationSeconds / 60)} min`}</small></div>{active && <span className="now-tag">NOW</span>}</li> })}</ol><button className="subtle-button" onClick={onParent}>Tune the adventure <span>→</span></button></aside></section><section className="footer-stats"><div><span>⭐</span><strong>{state.history[0]?.stars ?? 0}</strong><small>stars today</small></div><div><span>🔥</span><strong>{state.history.length}</strong><small>mornings explored</small></div><div><span>🚀</span><strong>{Math.round(overallProgress)}%</strong><small>quest complete</small></div></section></main> }
+
+type ParentViewProps = { routine: Routine; scheduleDifference: number; timeAvailable: number; onUpdateRoutine: (update: Partial<Routine>) => void; onUpdateActivity: (id: string, update: Partial<Activity>) => void; onMove: (index: number, direction: -1 | 1) => void; onAdd: () => void; onReset: () => void; onBack: () => void; onHistory: () => void; onSettings: () => void }
+function ParentView({ routine, scheduleDifference, timeAvailable, onUpdateRoutine, onUpdateActivity, onMove, onAdd, onReset, onBack, onHistory, onSettings }: ParentViewProps) { const totalMinutes = Math.round(scheduleSeconds(routine) / 60); return <main className="parent-layout"><div className="page-heading"><div><p className="eyebrow">Grown-up dashboard</p><h1>Shape the adventure</h1><p>Make mornings fit your family, then let the child screen do the reminding.</p></div><button className="secondary-button" onClick={onBack}>View child screen <span>→</span></button></div><div className="parent-grid"><section className="editor-panel"><div className="panel-title"><div><span className="eyebrow">Daily timing</span><h2>School day rhythm</h2></div><span className="panel-icon">⏱</span></div><div className="time-fields"><label>Wake up<input type="time" value={routine.wakeUpTime} onChange={(event) => onUpdateRoutine({ wakeUpTime: event.target.value })} /></label><span>to</span><label>Leave home<input type="time" value={routine.leaveTime} onChange={(event) => onUpdateRoutine({ leaveTime: event.target.value })} /></label></div><div className={`fit-banner ${scheduleDifference > 0 ? 'is-over' : ''}`}><span>{scheduleDifference > 0 ? '⚠️' : '✓'}</span><div><strong>{scheduleDifference > 0 ? `You need ${Math.ceil(scheduleDifference / 60)} more minutes` : 'This routine fits beautifully'}</strong><small>{totalMinutes} minutes planned · {Math.round(timeAvailable / 60)} minutes available</small></div></div></section><section className="editor-panel activities-editor"><div className="panel-title"><div><span className="eyebrow">Your missions</span><h2>Morning checklist</h2></div><button className="icon-button" onClick={onAdd} aria-label="Add activity">＋</button></div><div className="activity-edit-list">{routine.activities.map((activity, index) => <div className={`activity-edit ${activity.enabled ? '' : 'is-disabled'}`} key={activity.id}><span className="drag-handle">⋮⋮</span><span className="edit-icon">{activity.icon}</span><input aria-label="Activity name" value={activity.name} onChange={(event) => onUpdateActivity(activity.id, { name: event.target.value })} /><input className="duration-input" aria-label="Duration in minutes" type="number" min="1" max="60" value={Math.round(activity.durationSeconds / 60)} onChange={(event) => onUpdateActivity(activity.id, { durationSeconds: Math.max(1, Number(event.target.value)) * 60 })} /><span className="minute-label">min</span><button className="mini-button" onClick={() => onMove(index, -1)} aria-label="Move up">↑</button><button className="mini-button" onClick={() => onMove(index, 1)} aria-label="Move down">↓</button><button className={`toggle ${activity.enabled ? 'on' : ''}`} onClick={() => onUpdateActivity(activity.id, { enabled: !activity.enabled })} aria-label={`${activity.enabled ? 'Disable' : 'Enable'} ${activity.name}`}><span /></button></div>)}</div><button className="add-mission" onClick={onAdd}>＋ Add another mission</button></section><section className="editor-panel quick-panel"><div className="panel-title"><div><span className="eyebrow">Keep it positive</span><h2>Morning settings</h2></div><span className="panel-icon">✦</span></div><label className="setting-row"><span><strong>Sound effects</strong><small>Little nudges and celebrations</small></span><button className={`toggle ${routine.soundEnabled ? 'on' : ''}`} onClick={() => onUpdateRoutine({ soundEnabled: !routine.soundEnabled })} aria-label="Toggle sound"><span /></button></label><label className="setting-row"><span><strong>Gentle motion</strong><small>Respect reduced-motion settings</small></span><button className={`toggle ${!routine.reducedMotion ? 'on' : ''}`} onClick={() => onUpdateRoutine({ reducedMotion: !routine.reducedMotion })} aria-label="Toggle animation"><span /></button></label><button className="history-link" onClick={onHistory}>See morning history <span>→</span></button><button className="history-link" onClick={onSettings}>Open settings <span>→</span></button><button className="reset-link" onClick={onReset}>Restore default routine</button></section></div></main> }
+
+function HistoryView({ history, onBack }: { history: MorningResult[]; onBack: () => void }) { return <main className="simple-page"><button className="back-link" onClick={onBack}>← Parent dashboard</button><p className="eyebrow">A little look back</p><h1>Morning history</h1><p className="page-intro">Patterns, not pressure. Use these snapshots to make tomorrow easier.</p><section className="history-table"><div className="history-head"><span>Date</span><span>Result</span><span>Finish</span><span>Activities</span></div>{history.length === 0 ? <div className="empty-state">No mornings logged yet. Your first adventure will appear here.</div> : history.map((item) => <div className="history-row" key={item.date}><strong>{new Date(`${item.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</strong><span>{'★'.repeat(item.stars)}<i>{'★'.repeat(5 - item.stars)}</i></span><span>{item.minutesEarlyOrLate >= 0 ? `${item.minutesEarlyOrLate} min early` : `${Math.abs(item.minutesEarlyOrLate)} min late`}</span><span>{item.completedCount} complete</span></div>)}</section></main> }
+function SettingsView({ routine, onUpdate, onBack }: { routine: Routine; onUpdate: (update: Partial<Routine>) => void; onBack: () => void }) { return <main className="simple-page"><button className="back-link" onClick={onBack}>← Parent dashboard</button><p className="eyebrow">Grown-up settings</p><h1>Make it yours</h1><section className="settings-card"><label>Adventure name<input value={routine.name} onChange={(event) => onUpdate({ name: event.target.value })} /></label><label>Wake-up time<input type="time" value={routine.wakeUpTime} onChange={(event) => onUpdate({ wakeUpTime: event.target.value })} /></label><label>Leave-home time<input type="time" value={routine.leaveTime} onChange={(event) => onUpdate({ leaveTime: event.target.value })} /></label></section></main> }
 
 export default App

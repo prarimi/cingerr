@@ -13,13 +13,13 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['vite.svg'],
       manifest: {
-        name: '%REPLACE_ME%',
-        short_name: '%REPLACE_ME%',
-        description: '%REPLACE_ME%',
+        name: 'Morning Adventure',
+        short_name: 'Morning Adventure',
+        description: 'A friendly timed morning routine adventure for school days.',
         theme_color: '#242424',
         background_color: '#242424',
         display: 'standalone',
-        start_url: '/%REPLACE_ME%/',
+        start_url: '/cingerr/',
         icons: [
           {
             src: 'vite.svg',
